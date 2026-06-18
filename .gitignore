@@ -1,0 +1,19 @@
+# 依赖
+node_modules/
+
+# 构建产物
+dist/
+
+# 日志
+*.log
+
+# 临时数据文件
+*.tmp.json
+
+# 截图 / 预览图（开发过程产物）
+*.png
+
+# 编辑器 / 系统
+.DS_Store
+.vscode/
+.idea/
