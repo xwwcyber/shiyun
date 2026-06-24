@@ -149,6 +149,27 @@ function hashUnit(input: string, salt: number) {
   return (hash >>> 0) / 4294967295;
 }
 
+function qualityScaleFor(width: number, height: number) {
+  const pixels = width * height;
+  const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+  if (pixels * pixelRatio > 2_800_000) return 0.62;
+  if (width < 900 || height < 640) return 0.56;
+  if (pixels < 1_100_000) return 0.72;
+  return 0.82;
+}
+
+function scaledCount(base: number, qualityScale: number, min: number) {
+  return Math.max(min, Math.round(base * qualityScale));
+}
+
+function seeded(seedKey: string, salt: number) {
+  return hashUnit(seedKey, salt);
+}
+
+function centeredSeed(seedKey: string, salt: number) {
+  return seeded(seedKey, salt) - 0.5;
+}
+
 function createStellarMaterial(opacity: number) {
   const material = new THREE.ShaderMaterial({
     uniforms: {
@@ -173,7 +194,7 @@ function createStellarMaterial(opacity: number) {
         vPhase = aPhase;
         vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
         gl_Position = projectionMatrix * mvPosition;
-        gl_PointSize = max(uPixelRatio * 0.95, aSize * uPixelRatio * (uPointScale / max(0.16, -mvPosition.z)));
+        gl_PointSize = max(uPixelRatio * 0.82, aSize * uPixelRatio * (uPointScale / max(0.16, -mvPosition.z)));
       }
     `,
     fragmentShader: `
@@ -185,11 +206,12 @@ function createStellarMaterial(opacity: number) {
 
       void main() {
         float dist = distance(gl_PointCoord, vec2(0.5));
-        float core = smoothstep(0.22, 0.035, dist);
-        float rim = smoothstep(0.42, 0.2, dist) * 0.052;
-        float edge = smoothstep(0.5, 0.43, dist);
-        float alpha = (core + rim) * edge * vAlpha * uOpacity;
-        gl_FragColor = vec4(vColor * (0.74 + core * 2.45 + rim * 0.45), alpha);
+        float core = smoothstep(0.18, 0.018, dist);
+        float halo = smoothstep(0.52, 0.08, dist) * 0.16;
+        float needle = smoothstep(0.035, 0.0, abs(gl_PointCoord.x - 0.5)) * smoothstep(0.44, 0.05, abs(gl_PointCoord.y - 0.5)) * 0.035;
+        float alpha = (core + halo + needle) * vAlpha * uOpacity;
+        vec3 color = mix(vColor, vec3(1.0, 0.96, 0.84), core * 0.18);
+        gl_FragColor = vec4(color * (0.78 + core * 2.05 + halo * 0.7), alpha);
       }
     `,
     vertexColors: true,
@@ -250,7 +272,7 @@ export function PoetryCloud({
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(mount.clientWidth, mount.clientHeight);
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.08;
+    renderer.toneMappingExposure = 1.06;
     renderer.domElement.setAttribute("aria-label", "诗人星云可视化区域");
     mount.appendChild(renderer.domElement);
 
@@ -258,7 +280,7 @@ export function PoetryCloud({
     composer.setSize(mount.clientWidth, mount.clientHeight);
     composer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     composer.addPass(new RenderPass(scene, camera));
-    const bloom = new UnrealBloomPass(new THREE.Vector2(mount.clientWidth, mount.clientHeight), 0.2, 0.38, 0.56);
+    const bloom = new UnrealBloomPass(new THREE.Vector2(mount.clientWidth, mount.clientHeight), 0.34, 0.52, 0.64);
     composer.addPass(bloom);
 
     scene.add(new THREE.AmbientLight("#fff0dc", 0.92));
@@ -283,6 +305,7 @@ export function PoetryCloud({
     const nebulaTexture = createNebulaTexture();
     const selectedPoems = poems.filter((poem) => poem.poetId === selectedPoetRef.current);
     const seedKey = visualKey || selectedPoemRef.current || selectedPoetRef.current;
+    const qualityScale = qualityScaleFor(mount.clientWidth, mount.clientHeight);
     const stellarMaterials: THREE.ShaderMaterial[] = [];
     const orbitStarfieldMode = false;
     const crispParticleGalaxy = true;
@@ -301,7 +324,7 @@ export function PoetryCloud({
     };
 
     const starGeometry = new THREE.BufferGeometry();
-    const starCount = 88000;
+    const starCount = scaledCount(72000, qualityScale, 32000);
     const positions = new Float32Array(starCount * 3);
     const colors = new Float32Array(starCount * 3);
     const starSizes = new Float32Array(starCount);
@@ -337,9 +360,9 @@ export function PoetryCloud({
                 : colorA;
       mixColor(colors, i, mixed, radius < 4.8 ? 1.18 : 1.04 + hashUnit(seedKey, i + 1111) * 0.34);
       const centerBias = radius < 4.6 ? 0.78 : 0;
-      starSizes[i] = 0.045 + Math.random() * 0.22 + centerBias * 0.16 + (i % 251 === 0 ? 0.2 : 0);
-      starAlphas[i] = 0.16 + Math.random() * 0.28 + centerBias * 0.22;
-      starPhases[i] = Math.random() * Math.PI * 2;
+      starSizes[i] = 0.035 + seeded(seedKey, i + 1121) * 0.18 + centerBias * 0.13 + (i % 251 === 0 ? 0.24 : 0);
+      starAlphas[i] = 0.12 + seeded(seedKey, i + 1131) * 0.2 + centerBias * 0.2;
+      starPhases[i] = seeded(seedKey, i + 1141) * Math.PI * 2;
       starPoetIndices[i] = Math.floor(hashUnit(seedKey, i + 24101) * activePoetCount);
     }
     starGeometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
@@ -347,7 +370,7 @@ export function PoetryCloud({
     starGeometry.setAttribute("aSize", new THREE.BufferAttribute(starSizes, 1));
     starGeometry.setAttribute("aAlpha", new THREE.BufferAttribute(starAlphas, 1));
     starGeometry.setAttribute("aPhase", new THREE.BufferAttribute(starPhases, 1));
-    const starMaterial = createStellarMaterial(0.22);
+    const starMaterial = createStellarMaterial(0.2);
     stellarMaterials.push(starMaterial);
     const stars = new THREE.Points(starGeometry, starMaterial);
     stars.userData.poetIndices = starPoetIndices;
@@ -355,7 +378,7 @@ export function PoetryCloud({
     interactiveSpace.add(stars);
 
     const chromaticMistGeometry = new THREE.BufferGeometry();
-    const chromaticMistCount = 112000;
+    const chromaticMistCount = scaledCount(76000, qualityScale, 30000);
     const chromaticMistPositions = new Float32Array(chromaticMistCount * 3);
     const chromaticMistColors = new Float32Array(chromaticMistCount * 3);
     const chromaticMistSizes = new Float32Array(chromaticMistCount);
@@ -416,7 +439,7 @@ export function PoetryCloud({
     chromaticMistGeometry.setAttribute("aSize", new THREE.BufferAttribute(chromaticMistSizes, 1));
     chromaticMistGeometry.setAttribute("aAlpha", new THREE.BufferAttribute(chromaticMistAlphas, 1));
     chromaticMistGeometry.setAttribute("aPhase", new THREE.BufferAttribute(chromaticMistPhases, 1));
-    const chromaticMistMaterial = createStellarMaterial(0.28);
+    const chromaticMistMaterial = createStellarMaterial(0.24);
     stellarMaterials.push(chromaticMistMaterial);
     const chromaticMist = new THREE.Points(chromaticMistGeometry, chromaticMistMaterial);
     chromaticMist.userData.poetIndices = chromaticMistPoetIndices;
@@ -427,7 +450,7 @@ export function PoetryCloud({
     const clickablePointClouds: THREE.Points[] = [chromaticMist, stars];
 
     const milkyWayGeometry = new THREE.BufferGeometry();
-    const milkyWayCount = 56000;
+    const milkyWayCount = scaledCount(42000, qualityScale, 18000);
     const milkyWayPositions = new Float32Array(milkyWayCount * 3);
     const milkyWayColors = new Float32Array(milkyWayCount * 3);
     const milkyWaySizes = new Float32Array(milkyWayCount);
@@ -471,7 +494,7 @@ export function PoetryCloud({
     milkyWayGeometry.setAttribute("aSize", new THREE.BufferAttribute(milkyWaySizes, 1));
     milkyWayGeometry.setAttribute("aAlpha", new THREE.BufferAttribute(milkyWayAlphas, 1));
     milkyWayGeometry.setAttribute("aPhase", new THREE.BufferAttribute(milkyWayPhases, 1));
-    const milkyWayMaterial = createStellarMaterial(0.08);
+    const milkyWayMaterial = createStellarMaterial(0.075);
     stellarMaterials.push(milkyWayMaterial);
     const milkyWayBand = new THREE.Points(milkyWayGeometry, milkyWayMaterial);
     milkyWayBand.userData.clickPriority = 6;
@@ -482,7 +505,7 @@ export function PoetryCloud({
     }
 
     const nebulaGeometry = new THREE.BufferGeometry();
-    const nebulaCount = 38000;
+    const nebulaCount = scaledCount(28000, qualityScale, 12000);
     const nebulaPositions = new Float32Array(nebulaCount * 3);
     const nebulaColors = new Float32Array(nebulaCount * 3);
     const nebulaSizes = new Float32Array(nebulaCount);
@@ -524,7 +547,7 @@ export function PoetryCloud({
     nebulaGeometry.setAttribute("aSize", new THREE.BufferAttribute(nebulaSizes, 1));
     nebulaGeometry.setAttribute("aAlpha", new THREE.BufferAttribute(nebulaAlphas, 1));
     nebulaGeometry.setAttribute("aPhase", new THREE.BufferAttribute(nebulaPhases, 1));
-    const nebulaMaterial = createStellarMaterial(0.24);
+    const nebulaMaterial = createStellarMaterial(0.2);
     stellarMaterials.push(nebulaMaterial);
     const nebula = new THREE.Points(nebulaGeometry, nebulaMaterial);
     nebula.userData.clickPriority = 6;
@@ -536,7 +559,7 @@ export function PoetryCloud({
     const parallaxLayers = orbitStarfieldMode ? [stars, chromaticMist] : [stars, chromaticMist, milkyWayBand, nebula];
 
     const galaxyGeometry = new THREE.BufferGeometry();
-    const galaxyCount = 116000;
+    const galaxyCount = scaledCount(82000, qualityScale, 32000);
     const galaxyPositions = new Float32Array(galaxyCount * 3);
     const galaxyColors = new Float32Array(galaxyCount * 3);
     const galaxySizes = new Float32Array(galaxyCount);
@@ -592,7 +615,7 @@ export function PoetryCloud({
     galaxyGeometry.setAttribute("aSize", new THREE.BufferAttribute(galaxySizes, 1));
     galaxyGeometry.setAttribute("aAlpha", new THREE.BufferAttribute(galaxyAlphas, 1));
     galaxyGeometry.setAttribute("aPhase", new THREE.BufferAttribute(galaxyPhases, 1));
-    const galaxyMaterial = createStellarMaterial(0.24);
+    const galaxyMaterial = createStellarMaterial(0.22);
     stellarMaterials.push(galaxyMaterial);
     const galaxyDisk = new THREE.Points(galaxyGeometry, galaxyMaterial);
     galaxyDisk.userData.clickPriority = 8;
@@ -603,7 +626,7 @@ export function PoetryCloud({
     }
 
     const coreGeometry = new THREE.BufferGeometry();
-    const coreCount = 96000;
+    const coreCount = scaledCount(58000, qualityScale, 22000);
     const corePositions = new Float32Array(coreCount * 3);
     const coreColors = new Float32Array(coreCount * 3);
     const coreSizes = new Float32Array(coreCount);
@@ -614,11 +637,11 @@ export function PoetryCloud({
     const coreTeal = new THREE.Color("#a6ffe1");
     const coreRose = new THREE.Color("#ffd2e2");
     for (let i = 0; i < coreCount; i += 1) {
-      const angle = Math.random() * Math.PI * 2 + hashUnit(seedKey, i % 19) * 0.24;
-      const radius = Math.pow(Math.random(), 2.12) * 5.2;
-      const zBand = (Math.random() - 0.5) * (0.5 + radius * 0.07);
-      corePositions[i * 3] = Math.cos(angle) * radius * 1.05 + (Math.random() - 0.5) * 0.08;
-      corePositions[i * 3 + 1] = Math.sin(angle) * radius * 0.82 + (Math.random() - 0.5) * 0.2;
+      const angle = seeded(seedKey, i + 6201) * Math.PI * 2 + hashUnit(seedKey, i % 19) * 0.24;
+      const radius = Math.pow(seeded(seedKey, i + 6211), 2.12) * 5.2;
+      const zBand = centeredSeed(seedKey, i + 6221) * (0.5 + radius * 0.07);
+      corePositions[i * 3] = Math.cos(angle) * radius * 1.05 + centeredSeed(seedKey, i + 6231) * 0.08;
+      corePositions[i * 3 + 1] = Math.sin(angle) * radius * 0.82 + centeredSeed(seedKey, i + 6241) * 0.2;
       corePositions[i * 3 + 2] = -0.68 + zBand;
       const color =
         radius < 2.1
@@ -626,17 +649,17 @@ export function PoetryCloud({
           : radius < 3.8
             ? i % 5 === 0 ? coreWhite : coreGold
             : i % 31 === 0 ? coreTeal : i % 17 === 0 ? coreRose : coreGold;
-      mixColor(coreColors, i, color, radius < 2.1 ? 1.36 + Math.random() * 0.5 : 0.76 + Math.random() * 0.38);
-      coreSizes[i] = 0.06 + Math.random() * 0.3 + (radius < 1.7 ? 0.2 : 0) + (i % 277 === 0 ? 0.26 : 0);
-      coreAlphas[i] = 0.44 + Math.pow(1 - radius / 5.2, 2.0) * 0.68 + Math.random() * 0.12;
-      corePhases[i] = Math.random() * Math.PI * 2;
+      mixColor(coreColors, i, color, radius < 2.1 ? 1.36 + seeded(seedKey, i + 6251) * 0.5 : 0.76 + seeded(seedKey, i + 6261) * 0.38);
+      coreSizes[i] = 0.05 + seeded(seedKey, i + 6271) * 0.24 + (radius < 1.7 ? 0.18 : 0) + (i % 277 === 0 ? 0.28 : 0);
+      coreAlphas[i] = 0.38 + Math.pow(1 - radius / 5.2, 2.0) * 0.62 + seeded(seedKey, i + 6281) * 0.1;
+      corePhases[i] = seeded(seedKey, i + 6291) * Math.PI * 2;
     }
     coreGeometry.setAttribute("position", new THREE.BufferAttribute(corePositions, 3));
     coreGeometry.setAttribute("color", new THREE.BufferAttribute(coreColors, 3));
     coreGeometry.setAttribute("aSize", new THREE.BufferAttribute(coreSizes, 1));
     coreGeometry.setAttribute("aAlpha", new THREE.BufferAttribute(coreAlphas, 1));
     coreGeometry.setAttribute("aPhase", new THREE.BufferAttribute(corePhases, 1));
-    const coreMaterial = createStellarMaterial(0.54);
+    const coreMaterial = createStellarMaterial(0.46);
     stellarMaterials.push(coreMaterial);
     const coreCloud = new THREE.Points(coreGeometry, coreMaterial);
     coreCloud.userData.clickPriority = 8;
@@ -647,7 +670,7 @@ export function PoetryCloud({
     }
 
     const auroraRingGeometry = new THREE.BufferGeometry();
-    const auroraRingCount = 168000;
+    const auroraRingCount = scaledCount(98000, qualityScale, 36000);
     const auroraPositions = new Float32Array(auroraRingCount * 3);
     const auroraColors = new Float32Array(auroraRingCount * 3);
     const auroraSizes = new Float32Array(auroraRingCount);
@@ -718,8 +741,8 @@ export function PoetryCloud({
     auroraRingGeometry.setAttribute("aSize", new THREE.BufferAttribute(auroraSizes, 1));
     auroraRingGeometry.setAttribute("aAlpha", new THREE.BufferAttribute(auroraAlphas, 1));
     auroraRingGeometry.setAttribute("aPhase", new THREE.BufferAttribute(auroraPhases, 1));
-    const auroraRingMaterial = createStellarMaterial(0.58);
-    auroraRingMaterial.uniforms.uPointScale.value = 6.35;
+    const auroraRingMaterial = createStellarMaterial(0.48);
+    auroraRingMaterial.uniforms.uPointScale.value = 5.8;
     stellarMaterials.push(auroraRingMaterial);
     const auroraRing = new THREE.Points(auroraRingGeometry, auroraRingMaterial);
     auroraRing.userData.poetIndices = auroraPoetIndices;
@@ -731,7 +754,7 @@ export function PoetryCloud({
     }
 
     const referenceGalaxyGeometry = new THREE.BufferGeometry();
-    const referenceGalaxyCount = 220000;
+    const referenceGalaxyCount = scaledCount(128000, qualityScale, 46000);
     const referenceGalaxyPositions = new Float32Array(referenceGalaxyCount * 3);
     const referenceGalaxyColors = new Float32Array(referenceGalaxyCount * 3);
     const referenceGalaxySizes = new Float32Array(referenceGalaxyCount);
@@ -808,8 +831,8 @@ export function PoetryCloud({
     referenceGalaxyGeometry.setAttribute("aSize", new THREE.BufferAttribute(referenceGalaxySizes, 1));
     referenceGalaxyGeometry.setAttribute("aAlpha", new THREE.BufferAttribute(referenceGalaxyAlphas, 1));
     referenceGalaxyGeometry.setAttribute("aPhase", new THREE.BufferAttribute(referenceGalaxyPhases, 1));
-    const referenceGalaxyMaterial = createStellarMaterial(0.64);
-    referenceGalaxyMaterial.uniforms.uPointScale.value = 6.0;
+    const referenceGalaxyMaterial = createStellarMaterial(0.52);
+    referenceGalaxyMaterial.uniforms.uPointScale.value = 5.65;
     stellarMaterials.push(referenceGalaxyMaterial);
     const referenceGalaxy = new THREE.Points(referenceGalaxyGeometry, referenceGalaxyMaterial);
     referenceGalaxy.userData.poetIndices = referenceGalaxyPoetIndices;
@@ -1127,6 +1150,123 @@ export function PoetryCloud({
       depthWrite: false,
     });
 
+    const selectedFeaturePosition = new THREE.Vector3(0.1, -0.02, -0.78);
+    const selectedRingColor = new THREE.Color(colorByDynasty[selectedPoet?.dynasty ?? ""] ?? "#ffd47a").lerp(new THREE.Color("#fff8df"), 0.62);
+    const selectedStarRingCount = 720;
+    const selectedStarRingGeometry = new THREE.BufferGeometry();
+    const selectedStarRingPositions = new Float32Array(selectedStarRingCount * 3);
+    const selectedStarRingColors = new Float32Array(selectedStarRingCount * 3);
+    const selectedStarRingSizes = new Float32Array(selectedStarRingCount);
+    const selectedStarRingAlphas = new Float32Array(selectedStarRingCount);
+    const selectedStarRingPhases = new Float32Array(selectedStarRingCount);
+    for (let i = 0; i < selectedStarRingCount; i += 1) {
+      const progress = i / selectedStarRingCount;
+      const angle = progress * Math.PI * 2 + centeredSeed(seedKey, i + 8811) * 0.05;
+      const radius = 0.92 + centeredSeed(seedKey, i + 8821) * 0.06;
+      const frontArc = 0.58 + Math.max(0, Math.sin(angle + 0.88)) * 1.18;
+      selectedStarRingPositions[i * 3] = Math.cos(angle) * radius;
+      selectedStarRingPositions[i * 3 + 1] = centeredSeed(seedKey, i + 8841) * 0.034;
+      selectedStarRingPositions[i * 3 + 2] = Math.sin(angle) * radius * 0.44;
+      mixColor(selectedStarRingColors, i, selectedRingColor, 0.86 + hashUnit(seedKey, i + 8851) * 0.52);
+      selectedStarRingSizes[i] = (0.42 + hashUnit(seedKey, i + 8861) * 0.42) * (i % 37 === 0 ? 1.45 : 1);
+      selectedStarRingAlphas[i] = (0.26 + hashUnit(seedKey, i + 8871) * 0.44) * frontArc;
+      selectedStarRingPhases[i] = hashUnit(seedKey, i + 8881) * Math.PI * 2;
+    }
+    selectedStarRingGeometry.setAttribute("position", new THREE.BufferAttribute(selectedStarRingPositions, 3));
+    selectedStarRingGeometry.setAttribute("color", new THREE.BufferAttribute(selectedStarRingColors, 3));
+    selectedStarRingGeometry.setAttribute("aSize", new THREE.BufferAttribute(selectedStarRingSizes, 1));
+    selectedStarRingGeometry.setAttribute("aAlpha", new THREE.BufferAttribute(selectedStarRingAlphas, 1));
+    selectedStarRingGeometry.setAttribute("aPhase", new THREE.BufferAttribute(selectedStarRingPhases, 1));
+    const selectedStarRingMaterial = createStellarMaterial(0.92);
+    selectedStarRingMaterial.uniforms.uPointScale.value = 9.2;
+    selectedStarRingMaterial.depthTest = false;
+    stellarMaterials.push(selectedStarRingMaterial);
+    const selectedStarRing = new THREE.Points(selectedStarRingGeometry, selectedStarRingMaterial);
+    selectedStarRing.position.copy(selectedFeaturePosition);
+    selectedStarRing.rotation.set(1.08, -0.26, 0.1);
+    selectedStarRing.renderOrder = 9;
+    selectedStarRing.userData.kind = "selected-star-ring";
+    group.add(selectedStarRing);
+    const selectedRingBandPositions: number[] = [];
+    const selectedRingBandSegments = 260;
+    for (let i = 0; i < selectedRingBandSegments; i += 1) {
+      const start = (i / selectedRingBandSegments) * Math.PI * 2;
+      const end = ((i + 1) / selectedRingBandSegments) * Math.PI * 2;
+      selectedRingBandPositions.push(
+        Math.cos(start) * 0.92,
+        0,
+        Math.sin(start) * 0.92 * 0.42,
+        Math.cos(end) * 0.92,
+        0,
+        Math.sin(end) * 0.92 * 0.42,
+      );
+    }
+    const selectedRingBandGeometry = new THREE.BufferGeometry();
+    selectedRingBandGeometry.setAttribute("position", new THREE.Float32BufferAttribute(selectedRingBandPositions, 3));
+    const selectedRingBandMaterial = new THREE.LineBasicMaterial({
+      color: selectedRingColor,
+      transparent: true,
+      opacity: 0.34,
+      depthWrite: false,
+      depthTest: false,
+      blending: THREE.AdditiveBlending,
+      toneMapped: false,
+    });
+    const selectedRingBand = new THREE.LineSegments(selectedRingBandGeometry, selectedRingBandMaterial);
+    selectedRingBand.position.copy(selectedStarRing.position);
+    selectedRingBand.rotation.copy(selectedStarRing.rotation);
+    selectedRingBand.renderOrder = 8;
+    selectedRingBand.userData.kind = "selected-star-ring-band";
+    group.add(selectedRingBand);
+
+    const selectedRingBackPositions: number[] = [];
+    const selectedRingBackSegments = 280;
+    for (let i = 0; i < selectedRingBackSegments; i += 1) {
+      const start = (i / selectedRingBackSegments) * Math.PI * 2;
+      const end = ((i + 1) / selectedRingBackSegments) * Math.PI * 2;
+      selectedRingBackPositions.push(
+        Math.cos(start) * 0.74,
+        0,
+        Math.sin(start) * 0.74 * 0.84,
+        Math.cos(end) * 0.74,
+        0,
+        Math.sin(end) * 0.74 * 0.84,
+      );
+    }
+    const selectedRingBackGeometry = new THREE.BufferGeometry();
+    selectedRingBackGeometry.setAttribute("position", new THREE.Float32BufferAttribute(selectedRingBackPositions, 3));
+    const selectedRingBackMaterial = new THREE.LineBasicMaterial({
+      color: "#f4cd72",
+      transparent: true,
+      opacity: 0.38,
+      depthWrite: false,
+      depthTest: false,
+      blending: THREE.AdditiveBlending,
+      toneMapped: false,
+    });
+    const selectedRingBack = new THREE.LineSegments(selectedRingBackGeometry, selectedRingBackMaterial);
+    selectedRingBack.position.copy(selectedFeaturePosition);
+    selectedRingBack.rotation.set(0.36, -0.72, -0.78);
+    selectedRingBack.renderOrder = 10;
+    selectedRingBack.userData.kind = "selected-star-ring-back";
+    group.add(selectedRingBack);
+
+    orbitalSystems.push({
+      object: selectedStarRing,
+      speed: 0.000032,
+      wobble: 0.34,
+    });
+    orbitalSystems.push({
+      object: selectedRingBand,
+      speed: 0.000032,
+      wobble: 0.34,
+    });
+    orbitalSystems.push({
+      object: selectedRingBack,
+      speed: -0.000018,
+      wobble: 0.56,
+    });
+
     activePoets.forEach((poet, poetIndex) => {
       const knownPoemCount = poet.poemCount ?? poemDensity.get(poet.id) ?? 0;
       const density = Math.max(knownPoemCount, 1);
@@ -1139,22 +1279,22 @@ export function PoetryCloud({
       const displayZ = orbitStarfieldMode && isInitiallySelected ? -0.9 : poet.z;
       const cameraDistance = Math.hypot(displayX - camera.position.x, displayY - camera.position.y, displayZ - camera.position.z);
       const perspectiveScale = THREE.MathUtils.clamp(cameraDistance / 5.8, 0.16, 1);
-      const baseRadius = isInitiallySelected ? 0.026 + Math.min(densityScale, 10) * 0.0021 : 0.011 + Math.min(densityScale, 8) * 0.0012;
+      const baseRadius = isInitiallySelected ? 0.038 + Math.min(densityScale, 10) * 0.003 : 0.017 + Math.min(densityScale, 8) * 0.0017;
       const radius = baseRadius * fameScale * perspectiveScale;
       const color = colorByDynasty[poet.dynasty] ?? "#f8fff3";
       const starCoreColor = orbitStarfieldMode && isInitiallySelected
         ? new THREE.Color("#78efff")
-        : new THREE.Color(color).lerp(new THREE.Color("#fff7d6"), isInitiallySelected ? 0.56 : 0.34);
+        : new THREE.Color(color).lerp(new THREE.Color("#fff7d6"), isInitiallySelected ? 0.82 : 0.7);
       const material = new THREE.MeshBasicMaterial({
         color: starCoreColor,
         transparent: true,
-        opacity: orbitStarfieldMode && isInitiallySelected ? 0.82 : isInitiallySelected ? 0.035 : 0.025,
+        opacity: 0,
         depthWrite: false,
         blending: THREE.AdditiveBlending,
         toneMapped: false,
       });
-      const visualRadius = orbitStarfieldMode && isInitiallySelected ? radius * 3.7 : radius * (isInitiallySelected ? 0.38 : 0.5);
-      const mesh = new THREE.Mesh(new THREE.SphereGeometry(visualRadius, orbitStarfieldMode && isInitiallySelected ? 28 : 10, orbitStarfieldMode && isInitiallySelected ? 18 : 8), material);
+      const visualRadius = orbitStarfieldMode && isInitiallySelected ? radius * 4.2 : radius * (isInitiallySelected ? 0.54 : 0.62);
+      const mesh = new THREE.Mesh(new THREE.SphereGeometry(visualRadius, orbitStarfieldMode && isInitiallySelected ? 28 : 14, orbitStarfieldMode && isInitiallySelected ? 18 : 10), material);
       mesh.position.set(displayX, displayY, displayZ);
       mesh.userData.poetId = poet.id;
       mesh.userData.kind = "poet-star";
@@ -1162,9 +1302,29 @@ export function PoetryCloud({
       poetStarMeshes.push(mesh);
       poetRefs.current.set(poet.id, mesh);
 
+      const poetPointGeometry = new THREE.BufferGeometry();
+      const poetPointPositions = new Float32Array([0, 0, 0]);
+      const poetPointColors = new Float32Array([starCoreColor.r * 1.48, starCoreColor.g * 1.48, starCoreColor.b * 1.48]);
+      const poetPointSizes = new Float32Array([radius * (isInitiallySelected ? 3.8 : 3.2)]);
+      const poetPointAlphas = new Float32Array([orbitStarfieldMode && isInitiallySelected ? 1.2 : isInitiallySelected ? 1.05 : Math.min(0.95, 0.62 * fameScale)]);
+      const poetPointPhases = new Float32Array([hashUnit(poet.id, 6901) * Math.PI * 2]);
+      poetPointGeometry.setAttribute("position", new THREE.BufferAttribute(poetPointPositions, 3));
+      poetPointGeometry.setAttribute("color", new THREE.BufferAttribute(poetPointColors, 3));
+      poetPointGeometry.setAttribute("aSize", new THREE.BufferAttribute(poetPointSizes, 1));
+      poetPointGeometry.setAttribute("aAlpha", new THREE.BufferAttribute(poetPointAlphas, 1));
+      poetPointGeometry.setAttribute("aPhase", new THREE.BufferAttribute(poetPointPhases, 1));
+      const poetPointMaterial = createStellarMaterial(orbitStarfieldMode && isInitiallySelected ? 0.88 : isInitiallySelected ? 0.72 : 0.56);
+      poetPointMaterial.uniforms.uPointScale.value = orbitStarfieldMode && isInitiallySelected ? 7.4 : 6.35;
+      stellarMaterials.push(poetPointMaterial);
+      const poetPoint = new THREE.Points(poetPointGeometry, poetPointMaterial);
+      poetPoint.position.copy(mesh.position);
+      poetPoint.userData.poetId = poet.id;
+      poetPoint.userData.kind = "poet-star-point";
+      group.add(poetPoint);
+
       const coreHitRadius = Math.max(
-        radius * (isInitiallySelected ? 5.4 : 6.2),
-        (isInitiallySelected ? 0.11 : 0.064) * THREE.MathUtils.clamp(perspectiveScale, 0.55, 1),
+        radius * (isInitiallySelected ? 6.2 : 7.4),
+        (isInitiallySelected ? 0.16 : 0.092) * THREE.MathUtils.clamp(perspectiveScale, 0.55, 1),
       );
       const coreHitMesh = new THREE.Mesh(new THREE.SphereGeometry(coreHitRadius, 12, 8), hitMaterial);
       coreHitMesh.position.copy(mesh.position);
@@ -1178,20 +1338,20 @@ export function PoetryCloud({
           map: glowTexture ?? undefined,
           color: starCoreColor,
           transparent: true,
-          opacity: orbitStarfieldMode && isInitiallySelected ? 0.72 : isInitiallySelected ? 0.22 : Math.min(0.14, 0.08 * fameScale),
+          opacity: orbitStarfieldMode && isInitiallySelected ? 0.18 : isInitiallySelected ? 0.055 : Math.min(0.035, 0.018 * fameScale),
           depthWrite: false,
           blending: THREE.AdditiveBlending,
         }),
       );
       sprite.position.copy(mesh.position);
-      sprite.scale.setScalar(orbitStarfieldMode && isInitiallySelected ? radius * 10.5 : isInitiallySelected ? radius * 7.2 : radius * 4.7);
+      sprite.scale.setScalar(orbitStarfieldMode && isInitiallySelected ? radius * 6.4 : isInitiallySelected ? radius * 2.7 : radius * 1.95);
       group.add(sprite);
 
-      const dustCount = isInitiallySelected ? 24 : 8 + Math.min(Math.floor(densityScale), 8) + Math.round((fameScale - 1) * 18);
+      const dustCount = isInitiallySelected ? 14 : 5 + Math.min(Math.floor(densityScale), 5) + Math.round((fameScale - 1) * 7);
       const dustGeometry = new THREE.BufferGeometry();
       const dustPositions = new Float32Array(dustCount * 3);
       const dustColors = new Float32Array(dustCount * 3);
-      const dustSpread = radius * (isInitiallySelected ? 5.6 : 3.8);
+      const dustSpread = radius * (isInitiallySelected ? 2.6 : 1.9);
       for (let i = 0; i < dustCount; i += 1) {
         const angle = hashUnit(poet.id, i + 701) * Math.PI * 2;
         const distance = Math.pow(hashUnit(poet.id, i + 711), 0.62) * dustSpread;
@@ -1205,11 +1365,11 @@ export function PoetryCloud({
       dustGeometry.setAttribute("position", new THREE.BufferAttribute(dustPositions, 3));
       dustGeometry.setAttribute("color", new THREE.BufferAttribute(dustColors, 3));
       const dustMaterial = new THREE.PointsMaterial({
-        size: (isInitiallySelected ? 0.012 : 0.008) * THREE.MathUtils.clamp(perspectiveScale, 0.55, 1),
+        size: (isInitiallySelected ? 0.009 : 0.0065) * THREE.MathUtils.clamp(perspectiveScale, 0.55, 1),
         map: glowTexture ?? undefined,
         vertexColors: true,
         transparent: true,
-        opacity: orbitStarfieldMode && isInitiallySelected ? 0.78 : isInitiallySelected ? 0.5 : Math.min(0.42, 0.28 * fameScale),
+        opacity: orbitStarfieldMode && isInitiallySelected ? 0.46 : isInitiallySelected ? 0.18 : Math.min(0.18, 0.09 * fameScale),
         depthWrite: false,
         blending: THREE.AdditiveBlending,
       });
@@ -1218,7 +1378,7 @@ export function PoetryCloud({
       group.add(poetDust);
 
       if (isInitiallySelected || densityScale > 5.6 || fameScale > 1.18) {
-        const rayScale = radius * (isInitiallySelected ? 6.2 : 4.2 + (fameScale - 1) * 1.5);
+        const rayScale = radius * (isInitiallySelected ? 5.2 : 3.6 + (fameScale - 1) * 1.2);
         const rayGeometry = new THREE.BufferGeometry();
         rayGeometry.setAttribute(
           "position",
@@ -1385,6 +1545,7 @@ export function PoetryCloud({
       stellarMaterials.push(focusMaterial);
       const focusCloud = new THREE.Points(focusGeometry, focusMaterial);
       focusCloud.userData.clickPriority = 18;
+      focusCloud.position.set(selectedFeaturePosition.x, selectedFeaturePosition.y, 0);
       focusCloud.rotation.set(0.08, -0.2, 0.07);
       group.add(focusCloud);
       clickablePointClouds.push(focusCloud);
@@ -1393,9 +1554,9 @@ export function PoetryCloud({
       const rayCount = Math.min(520, Math.max(160, selectedPoems.length));
       for (let i = 0; i < rayCount; i += 1) {
         const angle = i * 2.399963;
-        const outer = 4.2 + Math.random() * 4.4;
-        const inner = 0.55 + Math.random() * 2.6;
-        const yLift = 1.1 + Math.random() * 2.7;
+        const outer = 4.2 + seeded(seedKey, i + 13961) * 4.4;
+        const inner = 0.55 + seeded(seedKey, i + 13971) * 2.6;
+        const yLift = 1.1 + seeded(seedKey, i + 13981) * 2.7;
         rayPositions.push(
           Math.cos(angle) * outer * 1.24,
           yLift + Math.sin(angle * 0.5) * 0.8,
@@ -1454,10 +1615,10 @@ export function PoetryCloud({
     const pressed = new Set<string>();
     const minCameraZ = 0.06;
     const maxCameraZ = 15.5;
-    const minCameraX = -3.2;
-    const maxCameraX = 3.2;
-    const minCameraY = -2.2;
-    const maxCameraY = 2.2;
+    const minCameraX = -10.8;
+    const maxCameraX = 10.8;
+    const minCameraY = -7.2;
+    const maxCameraY = 7.2;
     let targetCameraZ = camera.position.z;
     let targetCameraX = camera.position.x;
     let targetCameraY = camera.position.y;
@@ -1475,6 +1636,11 @@ export function PoetryCloud({
     const candidateLocalPosition = new THREE.Vector3();
     const candidateWorldPosition = new THREE.Vector3();
     const candidateScreenPosition = new THREE.Vector3();
+    const zoomCamera = camera.clone();
+    const zoomPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+    const zoomPointer = new THREE.Vector2();
+    const zoomBeforePoint = new THREE.Vector3();
+    const zoomAfterPoint = new THREE.Vector3();
     const clickGlowColor = new THREE.Color();
     const clickGlowWhite = new THREE.Color("#fff7d6");
 
@@ -1485,10 +1651,26 @@ export function PoetryCloud({
       pointerScreen.set(event.clientX - rect.left, event.clientY - rect.top);
     };
 
-    const setPointerDrift = (event: PointerEvent | WheelEvent) => {
-      const rect = renderer.domElement.getBoundingClientRect();
-      pointerDrift.x = ((event.clientX - rect.left) / rect.width - 0.5) * 2;
-      pointerDrift.y = ((event.clientY - rect.top) / rect.height - 0.5) * 2;
+    const resetPointerDrift = () => {
+      pointerDrift.set(0, 0);
+    };
+
+    const getTargetPlanePoint = (
+      normalizedX: number,
+      normalizedY: number,
+      cameraX: number,
+      cameraY: number,
+      cameraZ: number,
+      lookAtX: number,
+      lookAtY: number,
+      target: THREE.Vector3,
+    ) => {
+      zoomCamera.position.set(cameraX, cameraY, cameraZ);
+      zoomCamera.lookAt(lookAtX, lookAtY, 0);
+      zoomCamera.updateMatrixWorld(true);
+      zoomPointer.set(normalizedX, normalizedY);
+      raycaster.setFromCamera(zoomPointer, zoomCamera);
+      return raycaster.ray.intersectPlane(zoomPlane, target);
     };
 
     const disposeClickGlow = (glow: ClickGlow) => {
@@ -1679,7 +1861,7 @@ export function PoetryCloud({
     };
 
     const handlePointerMove = (event: PointerEvent) => {
-      setPointerDrift(event);
+      resetPointerDrift();
       if (!dragging) return;
       const dx = event.clientX - lastX;
       const dy = event.clientY - lastY;
@@ -1738,23 +1920,21 @@ export function PoetryCloud({
 
     const handleWheel = (event: WheelEvent) => {
       event.preventDefault();
-      setPointerDrift(event);
+      resetPointerDrift();
       const rect = renderer.domElement.getBoundingClientRect();
       const normalizedX = ((event.clientX - rect.left) / rect.width) * 2 - 1;
       const normalizedY = -(((event.clientY - rect.top) / rect.height) * 2 - 1);
-      const previousTargetZ = targetCameraZ;
       const nextTargetZ = THREE.MathUtils.clamp(targetCameraZ + event.deltaY * 0.009, minCameraZ, maxCameraZ);
-      const zoomDelta = previousTargetZ - nextTargetZ;
-      const halfViewHeightPerZ = Math.tan(THREE.MathUtils.degToRad(camera.fov * 0.5));
-      const halfViewWidthPerZ = halfViewHeightPerZ * camera.aspect;
-      const focusStrength = 0.92;
-      const panX = normalizedX * zoomDelta * halfViewWidthPerZ * focusStrength;
-      const panY = normalizedY * zoomDelta * halfViewHeightPerZ * focusStrength;
-
-      targetCameraX = THREE.MathUtils.clamp(targetCameraX + panX, minCameraX, maxCameraX);
-      targetCameraY = THREE.MathUtils.clamp(targetCameraY + panY, minCameraY, maxCameraY);
-      targetLookAtX = THREE.MathUtils.clamp(targetLookAtX + panX, minCameraX, maxCameraX);
-      targetLookAtY = THREE.MathUtils.clamp(targetLookAtY + panY, minCameraY, maxCameraY);
+      const before = getTargetPlanePoint(normalizedX, normalizedY, targetCameraX, targetCameraY, targetCameraZ, targetLookAtX, targetLookAtY, zoomBeforePoint);
+      const after = getTargetPlanePoint(normalizedX, normalizedY, targetCameraX, targetCameraY, nextTargetZ, targetLookAtX, targetLookAtY, zoomAfterPoint);
+      if (before && after) {
+        const panX = before.x - after.x;
+        const panY = before.y - after.y;
+        targetCameraX = THREE.MathUtils.clamp(targetCameraX + panX, minCameraX, maxCameraX);
+        targetCameraY = THREE.MathUtils.clamp(targetCameraY + panY, minCameraY, maxCameraY);
+        targetLookAtX = THREE.MathUtils.clamp(targetLookAtX + panX, minCameraX, maxCameraX);
+        targetLookAtY = THREE.MathUtils.clamp(targetLookAtY + panY, minCameraY, maxCameraY);
+      }
       targetCameraZ = nextTargetZ;
     };
 
@@ -1825,7 +2005,7 @@ export function PoetryCloud({
       starMaterial.uniforms.uPointScale.value = 5.75 - closeZoom * 0.28;
       chromaticMistMaterial.uniforms.uPointScale.value = 5.15 - closeZoom * 0.32;
       starMaterial.uniforms.uOpacity.value = orbitStarfieldMode ? 0.3 : 0.42;
-      chromaticMistMaterial.uniforms.uOpacity.value = (orbitStarfieldMode ? 0.18 : 0.44) * (1 - closeZoom * 0.08);
+      chromaticMistMaterial.uniforms.uOpacity.value = (orbitStarfieldMode ? 0.18 : 0.42) * (1 - closeZoom * 0.08);
       if (!orbitStarfieldMode) {
         auroraRingMaterial.uniforms.uPointScale.value = 5.25 - closeZoom * 0.24;
         milkyWayMaterial.uniforms.uPointScale.value = 5.55 - closeZoom * 0.2;
@@ -1833,12 +2013,12 @@ export function PoetryCloud({
         galaxyMaterial.uniforms.uPointScale.value = 5.55 - closeZoom * 0.2;
         coreMaterial.uniforms.uPointScale.value = 5.3 - closeZoom * 0.16;
         referenceGalaxyMaterial.uniforms.uPointScale.value = 6.25 - closeZoom * 0.18;
-        auroraRingMaterial.uniforms.uOpacity.value = 0.52 * (0.46 + cloudFade * 0.54);
-        milkyWayMaterial.uniforms.uOpacity.value = 0.24 * (1 - closeZoom * 0.08);
-        nebulaMaterial.uniforms.uOpacity.value = 0.42 * (1 - closeZoom * 0.08);
-        galaxyMaterial.uniforms.uOpacity.value = 0.5 * (1 - closeZoom * 0.1);
-        coreMaterial.uniforms.uOpacity.value = 0.86 * (1 - closeZoom * 0.08);
-        referenceGalaxyMaterial.uniforms.uOpacity.value = 0.78 * (1 - closeZoom * 0.06);
+        auroraRingMaterial.uniforms.uOpacity.value = 0.5 * (0.42 + cloudFade * 0.58);
+        milkyWayMaterial.uniforms.uOpacity.value = 0.23 * (1 - closeZoom * 0.08);
+        nebulaMaterial.uniforms.uOpacity.value = 0.4 * (1 - closeZoom * 0.08);
+        galaxyMaterial.uniforms.uOpacity.value = 0.48 * (1 - closeZoom * 0.1);
+        coreMaterial.uniforms.uOpacity.value = 0.68 * (1 - closeZoom * 0.08);
+        referenceGalaxyMaterial.uniforms.uOpacity.value = 0.6 * (1 - closeZoom * 0.06);
         zoomFadedSpriteMaterials.forEach((material) => {
           material.opacity = (material.userData.baseOpacity as number) * cloudFade;
         });
@@ -1867,7 +2047,7 @@ export function PoetryCloud({
       camera.position.z += (targetCameraZ - camera.position.z) * 0.18;
       currentLookAtX += (targetLookAtX - currentLookAtX) * 0.18;
       currentLookAtY += (targetLookAtY - currentLookAtY) * 0.18;
-      camera.lookAt(currentLookAtX + pointerDrift.x * 0.16, currentLookAtY - pointerDrift.y * 0.08, 0);
+      camera.lookAt(currentLookAtX, currentLookAtY, 0);
       poetRefs.current.forEach((object, poetId) => {
         const material = Array.isArray(object.material) ? object.material[0] : object.material;
         const isSelected = poetId === selectedPoetRef.current;
@@ -1875,7 +2055,7 @@ export function PoetryCloud({
         if (material instanceof THREE.MeshStandardMaterial) {
           material.emissiveIntensity = isSelected ? 1.08 : 0.42;
         } else if (material instanceof THREE.MeshBasicMaterial) {
-          material.opacity = isSelected ? 0.035 : 0.025;
+          material.opacity = 0;
         }
       });
 
